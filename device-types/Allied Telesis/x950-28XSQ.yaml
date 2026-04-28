@@ -1,7 +1,7 @@
 ---
 manufacturer: Allied Telesis
 model: x950-28XSQ
-slug: x950-28xsq
+slug: allied-telesis-x950-28xsq
 part_number: AT-x950-28XSQ
 u_height: 1
 is_full_depth: true
@@ -75,10 +75,7 @@ module-bays:
     position: B
   - name: Slot 1
     position: '1'
-inventory-items:
-  - name: Fan-Module A
-    manufacturer: Allied Telesis
-    part_id: AT-SBxFAN05
-  - name: Fan-Module B
-    manufacturer: Allied Telesis
-    part_id: AT-SBxFAN05
+  - name: Fan A
+    position: A
+  - name: Fan B
+    position: B

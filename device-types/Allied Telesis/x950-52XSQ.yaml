@@ -1,7 +1,7 @@
 ---
 manufacturer: Allied Telesis
 model: x950-52XSQ
-slug: x950-52xsq
+slug: allied-telesis-x950-52xsq
 part_number: AT-x950-52XSQ
 u_height: 1
 is_full_depth: true
@@ -12,6 +12,10 @@ module-bays:
   - name: PSU A
     position: A
   - name: PSU B
+    position: B
+  - name: Fan A
+    position: A
+  - name: Fan B
     position: B
 interfaces:
   - name: port1.0.1
@@ -121,10 +125,3 @@ interfaces:
   - name: eth0
     type: 1000base-t
     mgmt_only: true
-inventory-items:
-  - name: Fan-Module A
-    manufacturer: Allied Telesis
-    part_id: AT-SBxFAN05
-  - name: Fan-Module B
-    manufacturer: Allied Telesis
-    part_id: AT-SBxFAN05

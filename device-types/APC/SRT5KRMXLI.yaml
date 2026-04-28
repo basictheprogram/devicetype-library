@@ -1,14 +1,19 @@
 ---
 manufacturer: APC
 model: Smart-UPS SRT 5000VA RM 230V
-slug: smart-ups-srt-5000va-rm-230v
+slug: apc-smart-ups-srt-5000va-rm-230v
 part_number: SRT5KRMXLI
 u_height: 3
 is_full_depth: true
+weight: 54.5
+weight_unit: kg
 comments: Hard wire 3-wire (1P + N + E) power port
 console-ports:
   - name: Serial
     type: rj-45
+power-ports:
+  - name: UPS Input
+    type: hardwired
 power-outlets:
   - name: Group 1 Outlet 1
     type: iec-60320-c13
@@ -34,3 +39,6 @@ interfaces:
   - name: Ethernet
     type: 100base-tx
     mgmt_only: true
+module-bays:
+  - name: SmartSlot
+    position: SmartSlot

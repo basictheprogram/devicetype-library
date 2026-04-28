@@ -1,11 +1,13 @@
 ---
 manufacturer: Huawei
 model: S1720-28GWR-PWR-4TP-E
-slug: s1720-28gwr-pwr-4tp-e
+slug: huawei-s1720-28gwr-pwr-4tp-e
 part_number: '98010752'
 u_height: 1
 is_full_depth: false
 airflow: passive
+weight: 3.57
+weight_unit: kg
 power-ports:
   - name: PWR
     label: '~100/240V; 50/60Hz: 3A'

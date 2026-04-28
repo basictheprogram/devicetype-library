@@ -1,7 +1,7 @@
 ---
 manufacturer: SonicWall
 model: NSa 4700
-slug: nsa-4700
+slug: sonicwall-nsa-4700
 part_number: NSA4700
 u_height: 1
 is_full_depth: false
@@ -14,13 +14,11 @@ module-bays:
   - name: PSU Slot 2
     position: '2'
   - name: Expansion Module
-inventory-items:
-  - name: Storage-Module
-    manufacturer: SonicWall
-  - name: Fan-Module 1
-    manufacturer: SonicWall
-  - name: Fan-Module 2
-    manufacturer: SonicWall
+    position: '1'
+  - name: Fan 1
+    position: '1'
+  - name: Fan 2
+    position: '2'
 interfaces:
   - name: MGMT
     type: 1000base-t

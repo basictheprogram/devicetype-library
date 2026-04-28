@@ -14,10 +14,10 @@ console-ports:
   - name: usb0
     type: usb-mini-b
 module-bays:
-  - name: PSU1
-    position: '1'
-  - name: PSU2
-    position: '2'
+  - name: PS-A
+    position: A
+  - name: PS-B
+    position: B
   - name: FAN1
     position: '1'
   - name: FAN2
@@ -128,3 +128,11 @@ interfaces:
     type: 10gbase-x-sfpp
   - name: TenGigabitEthernet1/0/48
     type: 10gbase-x-sfpp
+  - name: FortyGigabitEthernet1/1/1
+    type: 40gbase-x-qsfpp
+  - name: FortyGigabitEthernet1/1/2
+    type: 40gbase-x-qsfpp
+  - name: FortyGigabitEthernet1/1/3
+    type: 40gbase-x-qsfpp
+  - name: FortyGigabitEthernet1/1/4
+    type: 40gbase-x-qsfpp

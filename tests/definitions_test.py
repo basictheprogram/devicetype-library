@@ -1,45 +1,28 @@
+from test_configuration import COMPONENT_TYPES, IMAGE_FILETYPES, SCHEMAS, SCHEMAS_BASEPATH, KNOWN_SLUGS, ROOT_DIR, USE_LOCAL_KNOWN_SLUGS, NETBOX_DT_LIBRARY_URL, KNOWN_MODULES, USE_UPSTREAM_DIFF, PRECOMMIT_ALL_SWITCHES
+import pickle_operations
+from yaml_loader import DecimalSafeLoader
+from device_types import DeviceType, ModuleType, RackType, verify_filename, validate_components
 import decimal
 import glob
 import json
 import os
+import tempfile
+import psutil
 from urllib.request import urlopen
-
 import pytest
 import yaml
-from jsonschema import Draft4Validator, RefResolver
+from referencing import Registry, Resource
+from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
-from yaml_loader import DecimalSafeLoader
-
-SCHEMAS = (
-    ('device-types', 'devicetype.json'),
-    ('module-types', 'moduletype.json'),
-)
-
-IMAGE_FILETYPES = (
-    'bmp', 'gif', 'pjp', 'jpg', 'pjpeg', 'jpeg', 'jfif', 'png', 'tif', 'tiff', 'webp'
-)
-
-COMPONENT_TYPES = (
-    'console-ports',
-    'console-server-ports',
-    'power-ports',
-    'power-outlets',
-    'interfaces',
-    'front-ports',
-    'rear-ports',
-    'device-bays',
-    'module-bays',
-)
-
+from git import Git, Repo
 
 def _get_definition_files():
     """
     Return a list of all definition files within the specified path.
     """
-    ret = []
+    file_list = []
 
     for path, schema in SCHEMAS:
-
         # Initialize the schema
         with open(f"schema/{schema}") as schema_file:
             schema = json.loads(schema_file.read(), parse_float=decimal.Decimal)
@@ -47,95 +30,268 @@ def _get_definition_files():
         # Validate that the schema exists
         assert schema, f"Schema definition for {path} is empty!"
 
-        # Map each definition file to its schema
-        for f in sorted(glob.glob(f"{path}/*/*", recursive=True)):
-            ret.append((f, schema))
+        # Map each definition file to its schema as a tuple (file, schema)
+        for file in sorted(glob.glob(f"{path}/*/*", recursive=True)):
+            file_list.append((file, schema, 'skip'))
 
-    return ret
+    return file_list
+
+def _generate_schema_registry():
+    """
+    Return a list of all definition files within the specified path.
+    """
+    registry = Registry()
+
+    for schema_f in os.listdir(SCHEMAS_BASEPATH):
+        # Initialize the schema
+        with open(f"schema/{schema_f}") as schema_file:
+            resource = Resource.from_contents(json.loads(schema_file.read(), parse_float=decimal.Decimal))
+            registry = resource @ registry
+
+    return registry
+
+def _get_diff_from_upstream():
+    file_list = []
+
+    repo = Repo(f"{os.path.dirname(os.path.abspath(__file__))}/../")
+    commits_list = list(repo.iter_commits())
+
+    if "upstream" not in repo.remotes:
+        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
+
+    upstream = repo.remotes.upstream
+    upstream.fetch()
+    changes = upstream.refs.master.commit.diff(repo.head)
+    changes = changes + repo.index.diff("HEAD")
+
+    for path, schema in SCHEMAS:
+        # Initialize the schema
+        with open(f"schema/{schema}") as schema_file:
+            schema = json.loads(schema_file.read(), parse_float=decimal.Decimal)
+
+        # Validate that the schema exists
+        assert schema, f"Schema definition for {path} is empty!"
+
+        # Ensure files are either added, renamed, modified or type changed (do not get deleted files)
+        CHANGE_TYPE_LIST = ['A', 'R', 'M', 'T']
+
+        # Iterate through changed files
+        for file in changes:
+            # Ensure the files are modified or added, this will disclude deleted files
+            if file.change_type in CHANGE_TYPE_LIST:
+                # If the file is renamed, ensure we are picking the right schema
+                if 'R' in file.change_type and path in file.rename_to:
+                    file_list.append((file.rename_to, schema, file.change_type))
+                elif path in file.a_path:
+                    file_list.append((file.a_path, schema, file.change_type))
+                elif path in file.b_path:
+                    file_list.append((file.b_path, schema, file.change_type))
+
+    return file_list
 
 def _get_image_files():
     """
     Return a list of all image files within the specified path and manufacturer.
     """
-    ret = []
+    file_list = []
 
-    for f in sorted(glob.glob(f"elevation-images/*/*", recursive=True)):
-        # f = 'elevation-images/Nokia/nokia-7220-ixr-h3-front.png'
-        # f.split('/')[1] = Nokia
-        assert f.split('/')[2].split('.')[-1] in IMAGE_FILETYPES, f"Invalid file extension: {f}"
-        
-        ret.append((f.split('/')[1], f))
+    # Map each image file to its manufacturer
+    for file in sorted(glob.glob(f"elevation-images{os.path.sep}*{os.path.sep}*", recursive=True)):
+        # Validate that the file extension is valid
+        assert file.split(os.path.sep)[2].split('.')[-1] in IMAGE_FILETYPES, f"Invalid file extension: {file}"
 
-    return ret
+        # Map each image file to its manufacturer as a tuple (manufacturer, file)
+        file_list.append((file.split(os.path.sep)[1], file))
 
+    return file_list
 
-definition_files = _get_definition_files()
-image_files = _get_image_files()
-known_slugs = set()
+def _get_all_module_image_files():
+    """
+    Return a list of all module-image files in the repository.
+    """
+    return [f for f in glob.glob('module-images/*/*') if os.path.isfile(f)]
 
+def _get_module_image_files():
+    """
+    Return a list of added, renamed, or modified module-image files from git diff against upstream.
+    """
+    file_list = []
+
+    repo = Repo(f"{os.path.dirname(os.path.abspath(__file__))}/../")
+
+    if "upstream" not in repo.remotes:
+        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
+
+    upstream = repo.remotes.upstream
+    upstream.fetch()
+
+    changes = upstream.refs.master.commit.diff(repo.head)
+    changes = changes + repo.index.diff("HEAD")
+
+    CHANGE_TYPE_LIST = ['A', 'R', 'M', 'T']
+
+    for change in changes:
+        if change.change_type in CHANGE_TYPE_LIST:
+            # Diff direction varies (committed vs staged), so resolve the
+            # current on-disk path by checking all candidates.
+            for candidate in (change.rename_from, change.rename_to, change.a_path, change.b_path):
+                if candidate and candidate.startswith('module-images/') and os.path.isfile(candidate):
+                    if candidate not in file_list:
+                        file_list.append(candidate)
+                    break
+
+    return file_list
 
 def _decimal_file_handler(uri):
+    """
+    Handler to work with floating decimals that fail normal validation.
+    """
     with urlopen(uri) as url:
         result = json.loads(url.read().decode("utf-8"), parse_float=decimal.Decimal)
     return result
-
 
 def test_environment():
     """
     Run basic sanity checks on the environment to ensure tests are running correctly.
     """
     # Validate that definition files exist
-    assert definition_files, "No definition files found!"
+    if definition_files:
+        pytest.skip("No changes to definition files found.")
 
+EVALUATE_ALL = False
+if any(x in PRECOMMIT_ALL_SWITCHES for x in psutil.Process(os.getppid()).cmdline()):
+    EVALUATE_ALL = True
 
-@pytest.mark.parametrize(('file_path', 'schema'), definition_files)
-def test_definitions(file_path, schema):
+if USE_UPSTREAM_DIFF and not EVALUATE_ALL:
+    definition_files = _get_diff_from_upstream()
+else:
+    definition_files = _get_definition_files()
+image_files = _get_image_files()
+
+if USE_UPSTREAM_DIFF and not EVALUATE_ALL:
+    module_image_files = _get_module_image_files()
+else:
+    module_image_files = _get_all_module_image_files()
+
+if USE_LOCAL_KNOWN_SLUGS:
+    KNOWN_SLUGS = pickle_operations.read_pickle_data(f'{ROOT_DIR}/tests/known-slugs.pickle')
+    KNOWN_MODULES = pickle_operations.read_pickle_data(f'{ROOT_DIR}/tests/known-modules.pickle')
+    KNOWN_RACKS = pickle_operations.read_pickle_data(f'{ROOT_DIR}/tests/known-racks.pickle')
+else:
+    clone_kwargs = {
+        'depth': 1,
+        'no-checkout': True,
+    }
+    if Git().version_info >= (2, 18):
+        # partial clone
+        clone_kwargs['filter'] = 'blob:none'
+    with tempfile.TemporaryDirectory() as temp_dir, \
+         Repo.clone_from(url=NETBOX_DT_LIBRARY_URL, to_path=temp_dir, **clone_kwargs) as repo \
+    :
+        repo.git.checkout('HEAD', 'tests/*.pickle')
+        KNOWN_SLUGS = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-slugs.pickle')
+        KNOWN_MODULES = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-modules.pickle')
+        KNOWN_RACKS = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-racks.pickle')
+
+SCHEMA_REGISTRY = _generate_schema_registry()
+
+@pytest.mark.parametrize(('file_path', 'schema', 'change_type'), definition_files)
+def test_definitions(file_path, schema, change_type):
     """
     Validate each definition file using the provided JSON schema and check for duplicate entries.
     """
-    # Check file extension
+    # Check file extension. Only .yml or .yaml files are supported.
     assert file_path.split('.')[-1] in ('yaml', 'yml'), f"Invalid file extension: {file_path}"
 
     # Read file
     with open(file_path) as definition_file:
         content = definition_file.read()
 
-    # Check for trailing newline
+    # Check for trailing newline. YAML files must end with an emtpy newline.
     assert content.endswith('\n'), "Missing trailing newline"
 
     # Load YAML data from file
     definition = yaml.load(content, Loader=DecimalSafeLoader)
 
+    # Check for non-ASCII characters
+    non_ascii_chars = [char for char in content if ord(char) > 127]
+    if non_ascii_chars:
+        pytest.fail(
+            f"{file_path} contains non-ASCII characters: {', '.join(set(non_ascii_chars))}",
+            pytrace=False
+        )
+
     # Validate YAML definition against the supplied schema
     try:
-        resolver = RefResolver(
-            f"file://{os.getcwd()}/schema/devicetype.json",
-            schema,
-            handlers={"file": _decimal_file_handler},
-        )
-        Draft4Validator(schema, resolver=resolver).validate(definition)
+        # Validate definition against schema
+        validator = Draft202012Validator(schema, registry=SCHEMA_REGISTRY)
+        validator.validate(definition)
     except ValidationError as e:
+        # Schema validation failure. Ensure you are following the proper format.
         pytest.fail(f"{file_path} failed validation: {e}", False)
 
-    # Check for duplicate slug
-    if file_path.startswith('device-types/'):
-        slug = definition.get('slug')
-        if slug and slug in known_slugs:
-            pytest.fail(f'{file_path} device type has duplicate slug "{slug}"', False)
-        elif slug:
-            known_slugs.add(slug)
+    # Identify if the definition is for a Device or Module
+    if "device-types" in file_path:
+        # A device
+        this_device = DeviceType(definition, file_path, change_type)
+    elif "module-types" in file_path:
+        # A module type
+        this_device = ModuleType(definition, file_path, change_type)
+    elif "rack-types" in file_path:
+        # A rack type
+        this_device = RackType(definition, file_path, change_type)
+    else:
+        # A module
+        this_device = ModuleType(definition, file_path, change_type)
 
-    # Check for duplicate components
-    for component_type in COMPONENT_TYPES:
-        known_names = set()
-        defined_components = definition.get(component_type, [])
-        for idx, component in enumerate(defined_components):
-            name = component.get('name')
-            if name in known_names:
-                pytest.fail(f'Duplicate entry "{name}" in {component_type} list', False)
-            known_names.add(name)
+    # Validate that front-ports reference existing rear-ports
+    if any(x in file_path for x in ("device-types", "module-types")):
+        rear_ports = definition.get("rear-ports", []) or []
+        front_ports = definition.get("front-ports", []) or []
 
-    # Check for empty quotes
+        rear_port_names = {
+            rp.get("name") for rp in rear_ports if isinstance(rp, dict)
+        }
+
+        rear_port_positions = {}
+        for fp in front_ports:
+            if not isinstance(fp, dict):
+                continue
+
+            rear_port_ref = fp.get("rear_port")
+
+            if rear_port_ref and rear_port_ref not in rear_port_names:
+                pytest.fail(
+                    f"{file_path}: front-port '{fp.get('name')}' references "
+                    f"rear_port '{rear_port_ref}', but no such rear-port exists. "
+                    f"Defined rear-ports: {sorted(rear_port_names)}",
+                    pytrace=False,
+                )
+
+            # Check for duplicate (rear_port, rear_port_position) combinations
+            if rear_port_ref:
+                rear_port_pos = fp.get("rear_port_position", 1)
+                key = (rear_port_ref, rear_port_pos)
+                if key in rear_port_positions:
+                    pytest.fail(
+                        f"{file_path}: front-port '{fp.get('name')}' has duplicate "
+                        f"(rear_port, rear_port_position) = ('{rear_port_ref}', {rear_port_pos}). "
+                        f"Already used by front-port '{rear_port_positions[key]}'.",
+                        pytrace=False,
+                    )
+                rear_port_positions[key] = fp.get("name")
+
+    # Verify the slug is valid, only if the definition type is a Device
+    if this_device.isDevice:
+        assert this_device.verify_slug(KNOWN_SLUGS), pytest.fail(this_device.failureMessage, False)
+
+    # Verify the filename is valid. Must either be the model or part_number.
+    assert verify_filename(this_device, (KNOWN_MODULES if not this_device.isDevice else None)), pytest.fail(this_device.failureMessage, False)
+
+    # Check for duplicate components within the definition
+    assert validate_components(COMPONENT_TYPES, this_device), pytest.fail(this_device.failureMessage, False)
+
+    # Check for empty quotes and fail if found
     def iterdict(var):
         for dict_value in var.values():
             if isinstance(dict_value, dict):
@@ -153,27 +309,85 @@ def test_definitions(file_path, schema):
             elif isinstance(list_value, list):
                 iterlist(list_value)
 
+    # Check for valid power definitions
+    if this_device.isDevice:
+        assert this_device.validate_power(), pytest.fail(this_device.failureMessage, False)
+        assert this_device.ensure_no_vga(), pytest.fail(this_device.failureMessage, False)
+        assert this_device.validate_child_u_height(), pytest.fail(this_device.failureMessage, False)
+
     # Check for images if front_image or rear_image is True
     if (definition.get('front_image') or definition.get('rear_image')):
-        manufacturer_images = [image for image in image_files if image[0] == file_path.split('/')[1]]
+        # Find images for given manufacturer, with matching device slug (exact match including case)
+        manufacturer_images = [image[1] for image in image_files if image[0] == file_path.split(os.path.sep)[1] and os.path.basename(image[1]).split('.')[0] == this_device.get_slug()]
         if not manufacturer_images:
-            pytest.fail(f'{file_path} has Front or Rear Image set to True but no images found for manufacturer', False)
+            pytest.fail(f'{file_path} has Front or Rear Image set to True but no images found for manufacturer/device (slug={this_device.get_slug()})', False)
+        elif len(manufacturer_images)>2:
+            pytest.fail(f'More than 2 images found for device with slug {this_device.get_slug()}: {manufacturer_images}', False)
 
+        # If front_image is True, verify that a front image exists
         if(definition.get('front_image')):
-            devices = [image_path.split('/')[2] for image, image_path in manufacturer_images if image_path.split('/')[2].split('.')[1] == 'front']
-            
-            if not devices:
-                pytest.fail(f'{file_path} has front_image set to True but no images found for device', False)
-            
-            for device_image in devices:
-                assert slug.find(device_image.split('.')[0].casefold()) != -1, f'{file_path} has front_image set to True but no images found for device'
-        if(definition.get('rear_image')):
-            devices = [image_path.split('/')[2] for image, image_path in manufacturer_images if image_path.split('/')[2].split('.')[1] == 'rear']
-            
-            if not devices:
-                pytest.fail(f'{file_path} has rear_image set to True but no images found for device', False)
-            
-            for device_image in devices:
-                assert slug.find(device_image.split('.')[0].casefold()) != -1, f'{file_path} has rear_image set to True but no images found for device'  
+            front_image = [image_path.split('/')[2] for image_path in manufacturer_images if os.path.basename(image_path).split('.')[1] == 'front']
 
+            if not front_image:
+                pytest.fail(f'{file_path} has front_image set to True but no matching image found (looking for \'elevation-images{os.path.sep}{file_path.split(os.path.sep)[1]}{os.path.sep}{this_device.get_slug()}.front.ext\' but only found {manufacturer_images})', False)
+
+        # If rear_image is True, verify that a rear image exists
+        if(definition.get('rear_image')):
+            rear_image = [image_path.split('/')[2] for image_path in manufacturer_images if os.path.basename(image_path).split('.')[1] == 'rear']
+
+            if not rear_image:
+                pytest.fail(f'{file_path} has rear_image set to True but no matching image found (looking for \'elevation-images{os.path.sep}{file_path.split(os.path.sep)[1]}{os.path.sep}{this_device.get_slug()}.rear.ext\' but only found {manufacturer_images})', False)
     iterdict(definition)
+
+@pytest.mark.parametrize('file_path', module_image_files)
+def test_module_images(file_path):
+    """
+    Validate module-image files: structure, naming, module-type existence, and image count.
+    """
+    import re
+
+    parts = file_path.split(os.path.sep)
+
+    # Must follow module-images/<manufacturer>/<image-file> flat structure
+    if len(parts) != 3:
+        pytest.fail(
+            f"Invalid module-image path: {file_path}. "
+            f"Expected: module-images/<manufacturer>/<filename> (flat, no per-model subdir)",
+            pytrace=False,
+        )
+
+    manufacturer, image_file = parts[1], parts[2]
+
+    # Valid image extension
+    ext = image_file.rsplit('.', 1)[-1].lower()
+    if ext not in IMAGE_FILETYPES:
+        pytest.fail(f"Invalid image file extension in {file_path}", pytrace=False)
+
+    # Filename must follow <module-name>.(front|rear).<ext> pattern
+    match = re.match(r'^(.+)\.(front|rear)\.[^.]+$', image_file, re.IGNORECASE)
+    if not match:
+        pytest.fail(
+            f"Module image filename must follow '<module-name>.(front|rear).<ext>': got '{image_file}'",
+            pytrace=False,
+        )
+    module_name = match.group(1)
+
+    # Corresponding module-type YAML must exist
+    yaml_path = os.path.join('module-types', manufacturer, f'{module_name}.yaml')
+    yml_path = os.path.join('module-types', manufacturer, f'{module_name}.yml')
+    if not (os.path.isfile(yaml_path) or os.path.isfile(yml_path)):
+        pytest.fail(
+            f"No module-type definition found for {file_path}. Expected: {yaml_path}",
+            pytrace=False,
+        )
+
+    # Maximum 2 images per module (one front, one rear)
+    vendor_dir = os.path.join('module-images', manufacturer)
+    if os.path.isdir(vendor_dir):
+        images = [f for f in os.listdir(vendor_dir) if f.startswith(module_name + '.')]
+        if len(images) > 2:
+            pytest.fail(
+                f"Maximum 2 images per module type. "
+                f"Found {len(images)} for '{module_name}' in {vendor_dir}: {images}",
+                pytrace=False,
+            )

@@ -1,7 +1,7 @@
 ---
 manufacturer: SonicWall
 model: NSa 2650
-slug: nsa-2650
+slug: sonicwall-nsa-2650
 part_number: NSA2650
 u_height: 1
 is_full_depth: false
@@ -14,9 +14,7 @@ module-bays:
   - name: PSU Slot 2
     position: '2'
   - name: Expansion Module
-inventory-items:
-  - name: Storage-Module
-    manufacturer: SonicWall
+    position: '1'
 interfaces:
   - name: MGMT
     type: 1000base-t
