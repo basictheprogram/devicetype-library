@@ -173,7 +173,7 @@ def _decimal_file_handler(uri):
         result = json.loads(url.read().decode("utf-8"), parse_float=decimal.Decimal)
     return result
 
-def _read_known_data_from_repo(repo, base_name):
+def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
     """
     Read known-data entries from the cloned repository's tests directory.
 
@@ -181,13 +181,14 @@ def _read_known_data_from_repo(repo, base_name):
     lists, which are normalized into a set of tuples for the existing test
     helpers.
     """
-    tests_tree = repo.commit('HEAD').tree / 'tests'
+    tests_tree = repo.commit(ref_name).tree / 'tests'
 
     try:
         blob = tests_tree / f'{base_name}.json'
     except KeyError as exc:
         raise FileNotFoundError(f'Unable to locate known data file for {base_name} in repository') from exc
 
+    # Existing slug and filename checks expect a set of 2-tuples.
     return {tuple(item) for item in json.loads(blob.data_stream.read().decode('utf-8'))}
 
 def test_environment():
