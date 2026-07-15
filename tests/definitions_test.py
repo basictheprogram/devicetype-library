@@ -118,11 +118,13 @@ def _get_comparison_ref(repo):
     except (GitCommandError, IndexError) as exc:
         if origin_error is not None:
             raise RuntimeError(
-                f"Unable to fetch comparison ref from either origin/{base_branch} ({str(origin_error)}) "
+                f"Unable to fetch comparison ref for base branch '{base_branch}' "
+                f"from either origin/{base_branch} ({str(origin_error)}) "
                 f"or upstream/{base_branch} ({str(exc)})"
             ) from exc
         raise RuntimeError(
-            f"Unable to fetch comparison ref from upstream/{base_branch} ({str(exc)})"
+            f"Unable to fetch comparison ref for base branch '{base_branch}' "
+            f"from upstream/{base_branch} ({str(exc)})"
         ) from exc
 
 def _get_remote_default_branch(repo, remote_name):
@@ -206,7 +208,10 @@ def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
     lists, which are normalized into a set of tuples for the existing test
     helpers.
     """
-    tests_tree = repo.commit(ref_name).tree / 'tests'
+    try:
+        tests_tree = repo.commit(ref_name).tree / 'tests'
+    except Exception as exc:
+        raise ValueError(f"Unable to access tests tree at ref '{ref_name}': {exc}") from exc
     known_data_file = f'{base_name}.json'
 
     try:
