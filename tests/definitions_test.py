@@ -131,14 +131,16 @@ def _get_remote_default_branch(repo, remote_name):
     """
     Return the remote's HEAD branch name, if available.
     """
+    head_branch_prefix = "HEAD branch: "
+
     if remote_name not in repo.remotes:
         return None
 
     remote_info = repo.git.remote("show", remote_name)
     for line in remote_info.splitlines():
         stripped_line = line.strip()
-        if stripped_line.startswith("HEAD branch: "):
-            branch_name = stripped_line[len("HEAD branch: "):].strip()
+        if stripped_line.startswith(head_branch_prefix):
+            branch_name = stripped_line[len(head_branch_prefix):].strip()
             if branch_name and branch_name != "(unknown)":
                 return branch_name
 
@@ -231,9 +233,12 @@ def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
         parsed_data = json.loads(decoded_data)
         if not isinstance(parsed_data, list):
             raise TypeError(f'Expected list, got {type(parsed_data).__name__}')
-        if any(not isinstance(item, list) or len(item) != 2 for item in parsed_data):
-            raise TypeError('Expected a list of two-item lists')
-        return {tuple(item) for item in parsed_data}
+        normalized_data = set()
+        for item in parsed_data:
+            if not isinstance(item, list) or len(item) != 2:
+                raise TypeError('Expected a list of two-item lists')
+            normalized_data.add(tuple(item))
+        return normalized_data
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
         raise ValueError(
             f'Unable to parse known data file tests/{known_data_file} at {ref_name}: {exc}'
