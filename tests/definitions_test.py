@@ -15,6 +15,7 @@ from referencing import Registry, Resource
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from git import Git, Repo
+from git.exc import GitCommandError
 
 def _get_definition_files():
     """
@@ -54,14 +55,9 @@ def _get_diff_from_upstream():
     file_list = []
 
     repo = Repo(f"{os.path.dirname(os.path.abspath(__file__))}/../")
-    commits_list = list(repo.iter_commits())
+    comparison_ref = _get_comparison_ref(repo)
 
-    if "upstream" not in repo.remotes:
-        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
-
-    upstream = repo.remotes.upstream
-    upstream.fetch()
-    changes = upstream.refs.master.commit.diff(repo.head)
+    changes = comparison_ref.commit.diff(repo.head)
     changes = changes + repo.index.diff("HEAD")
 
     for path, schema in SCHEMAS:
@@ -88,6 +84,67 @@ def _get_diff_from_upstream():
                     file_list.append((file.b_path, schema, file.change_type))
 
     return file_list
+
+def _get_comparison_ref(repo):
+    """
+    Return the remote-tracking base-branch ref used as the comparison baseline.
+
+    Prefer origin/<base-branch> for this repository so tests evaluate only files
+    changed relative to the PR base here. Fall back to upstream/<base-branch> if
+    the origin ref cannot be fetched or resolved.
+    """
+    base_branch = (
+        os.environ.get("GITHUB_BASE_REF")
+        or _get_remote_default_branch(repo, "origin")
+        or _get_remote_default_branch(repo, "upstream")
+        or "master"
+    )
+    origin_error = None
+
+    if "origin" in repo.remotes:
+        origin = repo.remotes.origin
+        try:
+            origin.fetch(f"refs/heads/{base_branch}:refs/remotes/origin/{base_branch}")
+            return repo.refs[f"origin/{base_branch}"]
+        except (GitCommandError, IndexError) as exc:
+            origin_error = exc
+
+    if "upstream" not in repo.remotes:
+        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
+    upstream = repo.remotes.upstream
+    try:
+        upstream.fetch(f"refs/heads/{base_branch}:refs/remotes/upstream/{base_branch}")
+        return repo.refs[f"upstream/{base_branch}"]
+    except (GitCommandError, IndexError) as exc:
+        if origin_error is not None:
+            raise RuntimeError(
+                f"Unable to fetch comparison ref for base branch '{base_branch}' "
+                f"from either origin/{base_branch} ({str(origin_error)}) "
+                f"or upstream/{base_branch} ({str(exc)})"
+            ) from exc
+        raise RuntimeError(
+            f"Unable to fetch comparison ref for base branch '{base_branch}' "
+            f"from upstream/{base_branch} ({str(exc)})"
+        ) from exc
+
+def _get_remote_default_branch(repo, remote_name):
+    """
+    Return the remote's HEAD branch name, if available.
+    """
+    head_branch_prefix = "HEAD branch: "
+
+    if remote_name not in repo.remotes:
+        return None
+
+    remote_info = repo.git.remote("show", remote_name)
+    for line in remote_info.splitlines():
+        stripped_line = line.strip()
+        if stripped_line.startswith(head_branch_prefix):
+            branch_name = stripped_line[len(head_branch_prefix):].strip()
+            if branch_name and branch_name != "(unknown)":
+                return branch_name
+
+    return None
 
 def _get_image_files():
     """
@@ -118,14 +175,9 @@ def _get_module_image_files():
     file_list = []
 
     repo = Repo(f"{os.path.dirname(os.path.abspath(__file__))}/../")
+    comparison_ref = _get_comparison_ref(repo)
 
-    if "upstream" not in repo.remotes:
-        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
-
-    upstream = repo.remotes.upstream
-    upstream.fetch()
-
-    changes = upstream.refs.master.commit.diff(repo.head)
+    changes = comparison_ref.commit.diff(repo.head)
     changes = changes + repo.index.diff("HEAD")
 
     CHANGE_TYPE_LIST = ['A', 'R', 'M', 'T']
@@ -149,6 +201,48 @@ def _decimal_file_handler(uri):
     with urlopen(uri) as url:
         result = json.loads(url.read().decode("utf-8"), parse_float=decimal.Decimal)
     return result
+
+def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
+    """
+    Read known-data entries from the cloned repository's tests directory.
+
+    The upstream repository stores these fixtures as JSON arrays of two-item
+    lists, which are normalized into a set of tuples for the existing test
+    helpers.
+    """
+    try:
+        tests_tree = repo.commit(ref_name).tree / 'tests'
+    except Exception as exc:
+        raise ValueError(
+            f"Unable to access tests tree at ref '{ref_name}' "
+            f"({exc.__class__.__name__}: {exc})"
+        ) from exc
+    known_data_file = f'{base_name}.json'
+
+    try:
+        blob = tests_tree / known_data_file
+    except KeyError as exc:
+        raise FileNotFoundError(
+            f'Unable to locate known data file tests/{known_data_file} at {ref_name} in repository'
+        ) from exc
+
+    # Existing slug and filename checks expect a set of 2-tuples.
+    try:
+        raw_data = blob.data_stream.read()
+        decoded_data = raw_data.decode('utf-8')
+        parsed_data = json.loads(decoded_data)
+        if not isinstance(parsed_data, list):
+            raise TypeError(f'Expected list, got {type(parsed_data).__name__}')
+        normalized_data = set()
+        for item in parsed_data:
+            if not isinstance(item, list) or len(item) != 2:
+                raise TypeError('Expected a list of two-item lists')
+            normalized_data.add(tuple(item))
+        return normalized_data
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise ValueError(
+            f'Unable to parse known data file tests/{known_data_file} at {ref_name}: {exc}'
+        ) from exc
 
 def test_environment():
     """
@@ -188,10 +282,9 @@ else:
     with tempfile.TemporaryDirectory() as temp_dir, \
          Repo.clone_from(url=NETBOX_DT_LIBRARY_URL, to_path=temp_dir, **clone_kwargs) as repo \
     :
-        repo.git.checkout('HEAD', 'tests/*.pickle')
-        KNOWN_SLUGS = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-slugs.pickle')
-        KNOWN_MODULES = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-modules.pickle')
-        KNOWN_RACKS = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-racks.pickle')
+        KNOWN_SLUGS = _read_known_data_from_repo(repo, 'known-slugs')
+        KNOWN_MODULES = _read_known_data_from_repo(repo, 'known-modules')
+        KNOWN_RACKS = _read_known_data_from_repo(repo, 'known-racks')
 
 SCHEMA_REGISTRY = _generate_schema_registry()
 
