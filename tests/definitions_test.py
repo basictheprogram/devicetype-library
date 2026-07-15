@@ -92,7 +92,7 @@ def _get_comparison_ref(repo):
     if "origin" in repo.remotes:
         origin = repo.remotes.origin
         try:
-            origin.fetch("master:refs/remotes/origin/master")
+            origin.fetch("refs/heads/master:refs/remotes/origin/master")
             return repo.refs["origin/master"]
         except (GitCommandError, IndexError) as exc:
             origin_error = exc
@@ -101,7 +101,7 @@ def _get_comparison_ref(repo):
         repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
     upstream = repo.remotes.upstream
     try:
-        upstream.fetch("master:refs/remotes/upstream/master")
+        upstream.fetch("refs/heads/master:refs/remotes/upstream/master")
         return repo.refs["upstream/master"]
     except (GitCommandError, IndexError) as exc:
         if origin_error is not None:
