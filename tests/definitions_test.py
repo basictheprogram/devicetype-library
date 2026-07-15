@@ -16,6 +16,7 @@ from referencing import Registry, Resource
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from git import Git, Repo
+from git.exc import GitCommandError
 
 def _get_definition_files():
     """
@@ -86,19 +87,29 @@ def _get_diff_from_upstream():
     return file_list
 
 def _get_comparison_ref(repo):
+    origin_error = None
+
     if "origin" in repo.remotes:
         origin = repo.remotes.origin
-        origin.fetch("master:refs/remotes/origin/master")
         try:
+            origin.fetch("master:refs/remotes/origin/master")
             return repo.refs["origin/master"]
-        except IndexError:
-            pass
+        except (GitCommandError, IndexError) as exc:
+            origin_error = exc
 
     if "upstream" not in repo.remotes:
         repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
     upstream = repo.remotes.upstream
-    upstream.fetch("master:refs/remotes/upstream/master")
-    return repo.refs["upstream/master"]
+    try:
+        upstream.fetch("master:refs/remotes/upstream/master")
+        return repo.refs["upstream/master"]
+    except (GitCommandError, IndexError) as exc:
+        if origin_error is not None:
+            raise RuntimeError(
+                f"Unable to fetch comparison refs from origin/master ({origin_error}) "
+                f"or upstream/master ({exc})"
+            ) from exc
+        raise RuntimeError(f"Unable to fetch comparison ref from upstream/master ({exc})") from exc
 
 def _get_image_files():
     """
@@ -170,7 +181,7 @@ def _read_known_data_from_repo(repo, base_name):
             return pickle.loads(data)
         return {tuple(item) for item in json.loads(data.decode('utf-8'))}
 
-    raise FileNotFoundError(f'Unable to locate known data file for {base_name} in upstream repository')
+    raise FileNotFoundError(f'Unable to locate known data file for {base_name} in repository')
 
 def test_environment():
     """
