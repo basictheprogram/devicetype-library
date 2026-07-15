@@ -93,7 +93,12 @@ def _get_comparison_ref(repo):
     changed relative to the PR base here. Fall back to upstream/<base-branch> if
     the origin ref cannot be fetched or resolved.
     """
-    base_branch = os.environ.get("GITHUB_BASE_REF") or "master"
+    base_branch = (
+        os.environ.get("GITHUB_BASE_REF")
+        or _get_remote_default_branch(repo, "origin")
+        or _get_remote_default_branch(repo, "upstream")
+        or "master"
+    )
     origin_error = None
 
     if "origin" in repo.remotes:
@@ -113,10 +118,29 @@ def _get_comparison_ref(repo):
     except (GitCommandError, IndexError) as exc:
         if origin_error is not None:
             raise RuntimeError(
-                f"Unable to fetch comparison ref from either origin/{base_branch} ({origin_error}) "
-                f"or upstream/{base_branch} ({exc})"
+                f"Unable to fetch comparison ref from either origin/{base_branch} ({str(origin_error)}) "
+                f"or upstream/{base_branch} ({str(exc)})"
             ) from exc
-        raise RuntimeError(f"Unable to fetch comparison ref from upstream/{base_branch} ({exc})") from exc
+        raise RuntimeError(
+            f"Unable to fetch comparison ref from upstream/{base_branch} ({str(exc)})"
+        ) from exc
+
+def _get_remote_default_branch(repo, remote_name):
+    """
+    Return the remote's HEAD branch name, if available.
+    """
+    if remote_name not in repo.remotes:
+        return None
+
+    remote_info = repo.git.remote("show", remote_name)
+    for line in remote_info.splitlines():
+        stripped_line = line.strip()
+        if stripped_line.startswith("HEAD branch: "):
+            branch_name = stripped_line.removeprefix("HEAD branch: ").strip()
+            if branch_name and branch_name != "(unknown)":
+                return branch_name
+
+    return None
 
 def _get_image_files():
     """
@@ -194,7 +218,10 @@ def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
 
     # Existing slug and filename checks expect a set of 2-tuples.
     try:
-        return {tuple(item) for item in json.loads(blob.data_stream.read().decode('utf-8'))}
+        raw_data = blob.data_stream.read()
+        decoded_data = raw_data.decode('utf-8')
+        parsed_data = json.loads(decoded_data)
+        return {tuple(item) for item in parsed_data}
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
         raise ValueError(
             f'Unable to parse known data file tests/{known_data_file} at {ref_name}: {exc}'
