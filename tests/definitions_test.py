@@ -6,6 +6,7 @@ import decimal
 import glob
 import json
 import os
+import pickle
 import tempfile
 import psutil
 from urllib.request import urlopen
@@ -54,14 +55,9 @@ def _get_diff_from_upstream():
     file_list = []
 
     repo = Repo(f"{os.path.dirname(os.path.abspath(__file__))}/../")
-    commits_list = list(repo.iter_commits())
+    comparison_ref = _get_comparison_ref(repo)
 
-    if "upstream" not in repo.remotes:
-        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
-
-    upstream = repo.remotes.upstream
-    upstream.fetch()
-    changes = upstream.refs.master.commit.diff(repo.head)
+    changes = comparison_ref.commit.diff(repo.head)
     changes = changes + repo.index.diff("HEAD")
 
     for path, schema in SCHEMAS:
@@ -88,6 +84,21 @@ def _get_diff_from_upstream():
                     file_list.append((file.b_path, schema, file.change_type))
 
     return file_list
+
+def _get_comparison_ref(repo):
+    if "origin" in repo.remotes:
+        origin = repo.remotes.origin
+        origin.fetch("master:refs/remotes/origin/master")
+        try:
+            return repo.refs["origin/master"]
+        except IndexError:
+            pass
+
+    if "upstream" not in repo.remotes:
+        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
+    upstream = repo.remotes.upstream
+    upstream.fetch("master:refs/remotes/upstream/master")
+    return repo.refs["upstream/master"]
 
 def _get_image_files():
     """
@@ -118,14 +129,9 @@ def _get_module_image_files():
     file_list = []
 
     repo = Repo(f"{os.path.dirname(os.path.abspath(__file__))}/../")
+    comparison_ref = _get_comparison_ref(repo)
 
-    if "upstream" not in repo.remotes:
-        repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
-
-    upstream = repo.remotes.upstream
-    upstream.fetch()
-
-    changes = upstream.refs.master.commit.diff(repo.head)
+    changes = comparison_ref.commit.diff(repo.head)
     changes = changes + repo.index.diff("HEAD")
 
     CHANGE_TYPE_LIST = ['A', 'R', 'M', 'T']
@@ -149,6 +155,22 @@ def _decimal_file_handler(uri):
     with urlopen(uri) as url:
         result = json.loads(url.read().decode("utf-8"), parse_float=decimal.Decimal)
     return result
+
+def _read_known_data_from_repo(repo, base_name):
+    tests_tree = repo.commit('HEAD').tree / 'tests'
+
+    for extension in ('pickle', 'json'):
+        try:
+            blob = tests_tree / f'{base_name}.{extension}'
+        except KeyError:
+            continue
+
+        data = blob.data_stream.read()
+        if extension == 'pickle':
+            return pickle.loads(data)
+        return {tuple(item) for item in json.loads(data.decode('utf-8'))}
+
+    raise FileNotFoundError(f'Unable to locate known data file for {base_name} in upstream repository')
 
 def test_environment():
     """
@@ -188,10 +210,9 @@ else:
     with tempfile.TemporaryDirectory() as temp_dir, \
          Repo.clone_from(url=NETBOX_DT_LIBRARY_URL, to_path=temp_dir, **clone_kwargs) as repo \
     :
-        repo.git.checkout('HEAD', 'tests/*.pickle')
-        KNOWN_SLUGS = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-slugs.pickle')
-        KNOWN_MODULES = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-modules.pickle')
-        KNOWN_RACKS = pickle_operations.read_pickle_data(f'{repo.working_dir}/tests/known-racks.pickle')
+        KNOWN_SLUGS = _read_known_data_from_repo(repo, 'known-slugs')
+        KNOWN_MODULES = _read_known_data_from_repo(repo, 'known-modules')
+        KNOWN_RACKS = _read_known_data_from_repo(repo, 'known-racks')
 
 SCHEMA_REGISTRY = _generate_schema_registry()
 
