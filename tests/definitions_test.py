@@ -87,19 +87,20 @@ def _get_diff_from_upstream():
 
 def _get_comparison_ref(repo):
     """
-    Return the remote-tracking master ref used as the comparison baseline.
+    Return the remote-tracking base-branch ref used as the comparison baseline.
 
-    Prefer origin/master for this repository so tests evaluate only files changed
-    relative to the PR base here. Fall back to upstream/master if origin/master
-    cannot be fetched or resolved.
+    Prefer origin/<base-branch> for this repository so tests evaluate only files
+    changed relative to the PR base here. Fall back to upstream/<base-branch> if
+    the origin ref cannot be fetched or resolved.
     """
+    base_branch = os.environ.get("GITHUB_BASE_REF") or "master"
     origin_error = None
 
     if "origin" in repo.remotes:
         origin = repo.remotes.origin
         try:
-            origin.fetch("refs/heads/master:refs/remotes/origin/master")
-            return repo.refs["origin/master"]
+            origin.fetch(f"refs/heads/{base_branch}:refs/remotes/origin/{base_branch}")
+            return repo.refs[f"origin/{base_branch}"]
         except (GitCommandError, IndexError) as exc:
             origin_error = exc
 
@@ -107,15 +108,15 @@ def _get_comparison_ref(repo):
         repo.create_remote("upstream", NETBOX_DT_LIBRARY_URL)
     upstream = repo.remotes.upstream
     try:
-        upstream.fetch("refs/heads/master:refs/remotes/upstream/master")
-        return repo.refs["upstream/master"]
+        upstream.fetch(f"refs/heads/{base_branch}:refs/remotes/upstream/{base_branch}")
+        return repo.refs[f"upstream/{base_branch}"]
     except (GitCommandError, IndexError) as exc:
         if origin_error is not None:
             raise RuntimeError(
-                f"Unable to fetch comparison ref from either origin/master ({origin_error}) "
-                f"or upstream/master ({exc})"
+                f"Unable to fetch comparison ref from either origin/{base_branch} ({origin_error}) "
+                f"or upstream/{base_branch} ({exc})"
             ) from exc
-        raise RuntimeError(f"Unable to fetch comparison ref from upstream/master ({exc})") from exc
+        raise RuntimeError(f"Unable to fetch comparison ref from upstream/{base_branch} ({exc})") from exc
 
 def _get_image_files():
     """
