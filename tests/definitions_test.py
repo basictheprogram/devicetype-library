@@ -6,7 +6,6 @@ import decimal
 import glob
 import json
 import os
-import pickle
 import tempfile
 import psutil
 from urllib.request import urlopen
@@ -87,6 +86,13 @@ def _get_diff_from_upstream():
     return file_list
 
 def _get_comparison_ref(repo):
+    """
+    Return the remote-tracking master ref used as the comparison baseline.
+
+    Prefer origin/master for this repository so tests evaluate only files changed
+    relative to the PR base here. Fall back to upstream/master if origin/master
+    cannot be fetched or resolved.
+    """
     origin_error = None
 
     if "origin" in repo.remotes:
@@ -168,20 +174,21 @@ def _decimal_file_handler(uri):
     return result
 
 def _read_known_data_from_repo(repo, base_name):
+    """
+    Read known-data entries from the cloned repository's tests directory.
+
+    The upstream repository stores these fixtures as JSON arrays of two-item
+    lists, which are normalized into a set of tuples for the existing test
+    helpers.
+    """
     tests_tree = repo.commit('HEAD').tree / 'tests'
 
-    for extension in ('pickle', 'json'):
-        try:
-            blob = tests_tree / f'{base_name}.{extension}'
-        except KeyError:
-            continue
+    try:
+        blob = tests_tree / f'{base_name}.json'
+    except KeyError as exc:
+        raise FileNotFoundError(f'Unable to locate known data file for {base_name} in repository') from exc
 
-        data = blob.data_stream.read()
-        if extension == 'pickle':
-            return pickle.loads(data)
-        return {tuple(item) for item in json.loads(data.decode('utf-8'))}
-
-    raise FileNotFoundError(f'Unable to locate known data file for {base_name} in repository')
+    return {tuple(item) for item in json.loads(blob.data_stream.read().decode('utf-8'))}
 
 def test_environment():
     """
