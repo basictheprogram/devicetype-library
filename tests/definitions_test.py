@@ -138,7 +138,7 @@ def _get_remote_default_branch(repo, remote_name):
     for line in remote_info.splitlines():
         stripped_line = line.strip()
         if stripped_line.startswith("HEAD branch: "):
-            branch_name = stripped_line.removeprefix("HEAD branch: ").strip()
+            branch_name = stripped_line[len("HEAD branch: "):].strip()
             if branch_name and branch_name != "(unknown)":
                 return branch_name
 
@@ -211,7 +211,10 @@ def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
     try:
         tests_tree = repo.commit(ref_name).tree / 'tests'
     except Exception as exc:
-        raise ValueError(f"Unable to access tests tree at ref '{ref_name}': {exc}") from exc
+        raise ValueError(
+            f"Unable to access tests tree at ref '{ref_name}' "
+            f"({exc.__class__.__name__}: {exc})"
+        ) from exc
     known_data_file = f'{base_name}.json'
 
     try:
@@ -226,6 +229,10 @@ def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
         raw_data = blob.data_stream.read()
         decoded_data = raw_data.decode('utf-8')
         parsed_data = json.loads(decoded_data)
+        if not isinstance(parsed_data, list):
+            raise TypeError(f'Expected list, got {type(parsed_data).__name__}')
+        if any(not isinstance(item, list) or len(item) != 2 for item in parsed_data):
+            raise TypeError('Expected a list of two-item lists')
         return {tuple(item) for item in parsed_data}
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
         raise ValueError(
