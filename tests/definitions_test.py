@@ -182,14 +182,22 @@ def _read_known_data_from_repo(repo, base_name, ref_name='HEAD'):
     helpers.
     """
     tests_tree = repo.commit(ref_name).tree / 'tests'
+    known_data_path = f'tests/{base_name}.json'
 
     try:
         blob = tests_tree / f'{base_name}.json'
     except KeyError as exc:
-        raise FileNotFoundError(f'Unable to locate known data file for {base_name} in repository') from exc
+        raise FileNotFoundError(
+            f'Unable to locate known data file {known_data_path} at {ref_name} in repository'
+        ) from exc
 
     # Existing slug and filename checks expect a set of 2-tuples.
-    return {tuple(item) for item in json.loads(blob.data_stream.read().decode('utf-8'))}
+    try:
+        return {tuple(item) for item in json.loads(blob.data_stream.read().decode('utf-8'))}
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise ValueError(
+            f'Unable to parse known data file {known_data_path} at {ref_name}: {exc}'
+        ) from exc
 
 def test_environment():
     """
